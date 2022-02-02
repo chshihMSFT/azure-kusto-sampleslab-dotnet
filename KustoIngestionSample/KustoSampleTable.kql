@@ -1,0 +1,11 @@
+﻿
+.drop table ADXSample01
+
+.create table ADXSample01 (ItemBatch:string, ItemSerial:int, ['id']:string, pk:string, product_id:string, product_name:string, product_category:string, product_quantity:int, product_price:float, product_tags:dynamic, sale_department:string, user_mail:string, user_name:string, user_country:string, user_ip:string, user_avatar:string, user_comments:string, user_isvip:bool, user_login_date:string, timestamp:datetime)  
+
+.create table ADXSample01 ingestion json mapping 'ADXSample01JSONMapping' '[{"column":"ItemBatch","path":"$[\'ItemBatch\']","datatype":"","transform":null},{"column":"ItemSerial","path":"$[\'ItemSerial\']","datatype":"","transform":null},{"column":"id","path":"$[\'id\']","datatype":"","transform":null},{"column":"pk","path":"$[\'pk\']","datatype":"","transform":null},{"column":"product_id","path":"$[\'product_id\']","datatype":"","transform":null},{"column":"product_name","path":"$[\'product_name\']","datatype":"","transform":null},{"column":"product_category","path":"$[\'product_category\']","datatype":"","transform":null},{"column":"product_quantity","path":"$[\'product_quantity\']","datatype":"","transform":null},{"column":"product_price","path":"$[\'product_price\']","datatype":"","transform":null},{"column":"product_tags","path":"$[\'product_tags\']","datatype":"","transform":null},{"column":"sale_department","path":"$[\'sale_department\']","datatype":"","transform":null},{"column":"user_mail","path":"$[\'user_mail\']","datatype":"","transform":null},{"column":"user_name","path":"$[\'user_name\']","datatype":"","transform":null},{"column":"user_country","path":"$[\'user_country\']","datatype":"","transform":null},{"column":"user_ip","path":"$[\'user_ip\']","datatype":"","transform":null},{"column":"user_avatar","path":"$[\'user_avatar\']","datatype":"","transform":null},{"column":"user_comments","path":"$[\'user_comments\']","datatype":"","transform":null},{"column":"user_isvip","path":"$[\'user_isvip\']","datatype":"","transform":null},{"column":"user_login_date","path":"$[\'user_login_date\']","datatype":"","transform":null},{"column":"timestamp","path":"$[\'timestamp\']","datatype":"","transform":null}]'
+
+.show table ['ADXSample01'] policy retention;
+
+.alter table ['ADXSample01'] policy retention "{\"SoftDeletePeriod\": \"00.08:00:00\", \"Recoverability\": \"Enabled\"}";
+
