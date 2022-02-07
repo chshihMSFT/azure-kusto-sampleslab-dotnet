@@ -70,8 +70,14 @@ namespace KustoIngestionSample
                     applicationClientId: AADAppId,
                     applicationKey: AADAppSecret,
                     authority: AADTenent);
-            
-            //Setup Kusto Ingestion
+
+            var kustoConnectionStringBuilderEngine =
+                new KustoConnectionStringBuilder($"https://{ADXclusterNameAndRegion}.kusto.windows.net").WithAadApplicationKeyAuthentication(
+                    applicationClientId: AADAppId,
+                    applicationKey: AADAppSecret,
+                    authority: AADTenent);
+
+            //Setup Kusto Queue Ingestion
             IKustoQueuedIngestClient Kustoclient = KustoIngestFactory.CreateQueuedIngestClient(kustoConnectionStringBuilderDM);
             var kustoIngestionProperties = new KustoQueuedIngestionProperties(databaseName: ADXDatabaseName, tableName: ADXTableName)
             {
@@ -80,11 +86,21 @@ namespace KustoIngestionSample
                 FlushImmediately = IngestionFlushImmediately,
                 Format = DataSourceFormat.json,
                 IngestionMapping = new IngestionMapping { IngestionMappingKind = Kusto.Data.Ingestion.IngestionMappingKind.Json, IngestionMappingReference = ADXTableMappingName }
-
             };
             var sourceOptions = new StorageSourceOptions() { DeleteSourceOnSuccess = DeleteSourceOnSuccessIngestion };
             IRetryPolicy retryPolicy = new NoRetry();
             ((IKustoQueuedIngestClient)Kustoclient).QueuePostRequestOptions.RetryPolicy = retryPolicy;
+
+            //Setup Kusto Streaming Ingestion
+            IKustoIngestClient KustoStreamingClient = KustoIngestFactory.CreateStreamingIngestClient(kustoConnectionStringBuilderEngine);
+            var kustostreamingIngestionProperties = new KustoIngestionProperties(databaseName: ADXDatabaseName, tableName: ADXTableName)
+            {
+                //ReportLevel = IngestionReportLevel.FailuresAndSuccesses,
+                //ReportMethod = IngestionReportMethod.QueueAndTable,
+                //FlushImmediately = IngestionFlushImmediately,
+                Format = DataSourceFormat.json,
+                IngestionMapping = new IngestionMapping { IngestionMappingKind = Kusto.Data.Ingestion.IngestionMappingKind.Json, IngestionMappingReference = ADXTableMappingName }
+            };
 
             //Local Blob creation
             String containerName = BlobContainerName;
@@ -113,24 +129,31 @@ namespace KustoIngestionSample
                 String miniBatchId = i.ToString().PadLeft(10, '0');
                 miniBatchId = miniBatchId.Substring(miniBatchId.Length - 10, 10);
                 String FileName = String.Format($"{BatchTimestamp}-{BatchId}-{miniBatchId}.json");
-             
+                String Ingetiontype = "Streaming";
                 try
                 {
                     List<Item> itemslist = GetItemsToList(miniItemsPerBatch, BatchId);
                     await SaveItemsToLocalFilePath(itemslist, FilePath, FileName);
-                    await SaveItemsToBlobContainer(FilePath, FileName, blobContainerClient);
-                    BlobClient blob = blobContainerClient.GetBlobClient(FileName);
-                    Uri blobSASUri;
-                    if (DeleteSourceOnSuccessIngestion)
-                        blobSASUri = blob.GenerateSasUri(Azure.Storage.Sas.BlobSasPermissions.Read | Azure.Storage.Sas.BlobSasPermissions.Delete, DateTime.UtcNow.AddHours(4));
-                    else
-                        blobSASUri = blob.GenerateSasUri(Azure.Storage.Sas.BlobSasPermissions.Read, DateTime.UtcNow.AddHours(4));
+                    if (Ingetiontype == "Queue")
+                    {
+                        await SaveItemsToBlobContainer(FilePath, FileName, blobContainerClient);
+                        BlobClient blob = blobContainerClient.GetBlobClient(FileName);
+                        Uri blobSASUri;
+                        if (DeleteSourceOnSuccessIngestion)
+                            blobSASUri = blob.GenerateSasUri(Azure.Storage.Sas.BlobSasPermissions.Read | Azure.Storage.Sas.BlobSasPermissions.Delete, DateTime.UtcNow.AddHours(4));
+                        else
+                            blobSASUri = blob.GenerateSasUri(Azure.Storage.Sas.BlobSasPermissions.Read, DateTime.UtcNow.AddHours(4));
 
-                    await ExecuteQueueIngestion(blobSASUri, Kustoclient, kustoIngestionProperties, sourceOptions);
+                        await ExecuteQueueIngestion(blobSASUri, Kustoclient, kustoIngestionProperties, sourceOptions);
+                    }
+                    else if (Ingetiontype == "Streaming")
+                    {
+                        await ExecuteStreamingIngestion(FilePath, FileName, KustoStreamingClient, kustostreamingIngestionProperties);
+                    }
                 }
                 catch (Exception ce)
                 {
-                    Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, Ingestion round {i}, failed: {ce.Message}");
+                    Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ingestion round {i}, failed: {ce.Message}");
                 }
                 finally
                 {
@@ -142,14 +165,14 @@ namespace KustoIngestionSample
                         //await CleanUpBlobContainer(blobContainerClient);
                     }
 
-                    Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, Ingestion round {i}, finished (AccumulatedItems={AccumulatedItems}).");
+                    Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ingestion round {i}, finished (AccumulatedItems={AccumulatedItems}).");
                 }                
                 Thread.Sleep(IngestionDelayMS);
             }
 
             stopwatch.Stop();
             Console.WriteLine();
-            Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, queue ingestion demo ({TotalItems} items; {i} batches) finished in {stopwatch.Elapsed}.");
+            Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, queue ingestion demo finished in {stopwatch.Elapsed} ({TotalItems} items; {i} batches; IngestionFlushImmediately={IngestionFlushImmediately}).");
         }
 
         private static async Task ExecuteQueueIngestion(Uri blobSASUri, IKustoQueuedIngestClient Kustoclient, KustoQueuedIngestionProperties kustoIngestionProperties, StorageSourceOptions sourceOptions)
@@ -177,14 +200,60 @@ namespace KustoIngestionSample
                             Succeeded++;
                             break;
                     }
-                }
-                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteQueueIngestion, job submitted: {IngestResults.Count()} ( {Pending} Pending; {Failed} Failed; {Succeeded} Succeeded) / IngestionSourceId:{sourceOptions.SourceId}");
+                }                
+                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteQueueIngestion, job submitted: {IngestResults.Count()} ({Pending} Pending; {Failed} Failed; {Succeeded} Succeeded; IngestionSourceId:{sourceOptions.SourceId})");
             }
             catch (Exception ce)
             {
                 Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteQueueIngestion, job failed: {ce.Message}");
             }
             Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteQueueIngestion, job finished");
+        }
+        private static async Task ExecuteStreamingIngestion(String FilePath, String FileName, IKustoIngestClient Kustoclient, KustoIngestionProperties kustoIngestionProperties)
+        {
+            Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteStreamingIngestion, job start");
+
+            Stopwatch stopwatch = new Stopwatch();
+            stopwatch.Restart();
+            long fileSize = 0;
+            try
+            {
+                IKustoIngestionResult KustoIngestionresult;
+                using (FileStream fileStream = File.OpenRead(FilePath + FileName))
+                {
+                    fileSize = fileStream.Length;
+                    KustoIngestionresult = Kustoclient.IngestFromStreamAsync(stream: fileStream, ingestionProperties: kustoIngestionProperties).GetAwaiter().GetResult();
+                }
+
+                var IngestResults = KustoIngestionresult.GetIngestionStatusCollection();
+                int Pending = 0, Failed = 0, Succeeded = 0;
+                foreach (IngestionStatus result in IngestResults)
+                {
+                    switch (result.Status.ToString())
+                    {
+                        case "Pending":
+                            Pending++;
+                            break;
+                        case "Failed":
+                            Failed++;
+                            break;
+                        case "Succeeded":
+                            Succeeded++;
+                            break;
+                    }
+                }
+                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteStreamingIngestion, job submitted: {IngestResults.Count()} ({Pending} Pending; {Failed} Failed; {Succeeded} Succeeded)");
+            }
+            catch (Exception ce)
+            {
+                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteStreamingIngestion, job failed: {ce.Message}");
+            }
+            finally
+            {
+                stopwatch.Stop();
+                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteStreamingIngestion, job finished: {(fileSize / 1024.0 / 1024.0).ToString("f2")} Mb in {stopwatch.Elapsed}. " +
+                $"({(fileSize / 1024.0 / 1024.0 / (stopwatch.ElapsedMilliseconds / 1000)).ToString("f2")} Mb/s).");
+            }
         }
 
         private static async Task SaveItemsToLocalFilePath(List<Item> itemslist, String FilePath, String FileName)
@@ -230,7 +299,7 @@ namespace KustoIngestionSample
         {
             Stopwatch stopwatch = new Stopwatch();
             stopwatch.Restart();
-            Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, SaveItemsToBlobContainer, uploadin local file to blob container: {blobContainerClient.Uri}");
+            Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, SaveItemsToBlobContainer, uploading local file to blob container: {blobContainerClient.Uri}");
             
             BlobClient blob = blobContainerClient.GetBlobClient(FileName);
             long fileSize = 0;

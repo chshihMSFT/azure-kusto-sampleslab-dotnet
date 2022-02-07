@@ -9,3 +9,10 @@
 
 .alter table ['ADXSample01'] policy retention "{\"SoftDeletePeriod\": \"00.08:00:00\", \"Recoverability\": \"Enabled\"}";
 
+ADXSample01 
+| extend ingestion_time = ingestion_time() 
+| extend extent_id = extent_id()
+| summarize ingestion_timeStart=min(ingestion_time), ingestion_timeEnd=max(ingestion_time), timestampMin=min(timestamp), timestampMax=max(timestamp), IngestedRecords=count() by ItemBatch, extent_id
+| summarize ingestion_timeStart=min(ingestion_timeStart), ingestion_timeEnd=max(ingestion_timeEnd), timestampMin=min(timestampMin), timestampMax=max(timestampMax), IngestedRecords=sum(IngestedRecords), ExtentCounts=dcount(extent_id) by ItemBatch
+
+
