@@ -5,7 +5,20 @@
 
 .create table ADXSample01 ingestion json mapping 'ADXSample01JSONMapping' '[{"column":"ItemBatch","path":"$[\'ItemBatch\']","datatype":"","transform":null},{"column":"ItemSerial","path":"$[\'ItemSerial\']","datatype":"","transform":null},{"column":"id","path":"$[\'id\']","datatype":"","transform":null},{"column":"pk","path":"$[\'pk\']","datatype":"","transform":null},{"column":"product_id","path":"$[\'product_id\']","datatype":"","transform":null},{"column":"product_name","path":"$[\'product_name\']","datatype":"","transform":null},{"column":"product_category","path":"$[\'product_category\']","datatype":"","transform":null},{"column":"product_quantity","path":"$[\'product_quantity\']","datatype":"","transform":null},{"column":"product_price","path":"$[\'product_price\']","datatype":"","transform":null},{"column":"product_tags","path":"$[\'product_tags\']","datatype":"","transform":null},{"column":"sale_department","path":"$[\'sale_department\']","datatype":"","transform":null},{"column":"user_mail","path":"$[\'user_mail\']","datatype":"","transform":null},{"column":"user_name","path":"$[\'user_name\']","datatype":"","transform":null},{"column":"user_country","path":"$[\'user_country\']","datatype":"","transform":null},{"column":"user_ip","path":"$[\'user_ip\']","datatype":"","transform":null},{"column":"user_avatar","path":"$[\'user_avatar\']","datatype":"","transform":null},{"column":"user_comments","path":"$[\'user_comments\']","datatype":"","transform":null},{"column":"user_isvip","path":"$[\'user_isvip\']","datatype":"","transform":null},{"column":"user_login_date","path":"$[\'user_login_date\']","datatype":"","transform":null},{"column":"timestamp","path":"$[\'timestamp\']","datatype":"","transform":null}]'
 
-.show table ['ADXSample01'] policy retention;
+.show table ADXSample01 policy retention;
 
-.alter table ['ADXSample01'] policy retention "{\"SoftDeletePeriod\": \"00.08:00:00\", \"Recoverability\": \"Enabled\"}";
+.alter table ADXSample01 policy retention "{\"SoftDeletePeriod\": \"00.08:00:00\", \"Recoverability\": \"Enabled\"}";
+
+.show table ADXSample01 policy streamingingestion 
+
+.alter table ADXSample01 policy streamingingestion enable 
+
+
+
+ADXSample01 
+| extend ingestion_time = ingestion_time() 
+| extend extent_id = extent_id()
+| summarize ingestion_timeStart=min(ingestion_time), ingestion_timeEnd=max(ingestion_time), timestampMin=min(timestamp), timestampMax=max(timestamp), IngestedRecords=count() by ItemBatch, extent_id
+| summarize ingestion_timeStart=min(ingestion_timeStart), ingestion_timeEnd=max(ingestion_timeEnd), timestampMin=min(timestampMin), timestampMax=max(timestampMax), IngestedRecords=sum(IngestedRecords), ExtentCounts=dcount(extent_id) by ItemBatch
+
 
