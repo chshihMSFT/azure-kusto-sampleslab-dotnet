@@ -20,7 +20,7 @@ namespace KustoIngestionSample
 {
     class Program
     {
-        static string storageConnectionString;
+        static string StorageConnectionString;
         static string BlobContainerName;
         static string LocalFilePath;
 
@@ -31,158 +31,223 @@ namespace KustoIngestionSample
         static string ADXDatabaseName;
         static string ADXTableName;
         static string ADXTableMappingName;
-        static bool IngestionFlushImmediately = false;
-        static bool DeleteSourceOnSuccessIngestion = true;
 
-        static int TotalItems = 50000;
+        //default ingestion parameters
+        static string IngestionType = "Streaming";
+        static int IngestionTotalItems = 50000;
+        static int IngestionItemsPerBatch = 10000;
+        static int IngestionDelayMSPerBatch = 1000; //1 sec
+        static bool QueueIngestionFlushImmediately = false;
+        static bool DeleteSourceOnSuccessQueueIngestion = true;
         static int AccumulatedItems = 0;
-        static int ItemsPerBatch = 10000;
-        static int IngestionDelayMS = 1000;
+
         public static async Task Main(string[] args)
         {
-            //Reading settings
-            IConfigurationRoot configuration = new ConfigurationBuilder()
-                    .AddJsonFile("appSettings.json")
-                    .Build();
+            string connectionStringEngine = String.Empty, connectionStringDM = String.Empty;
 
-            storageConnectionString = configuration["StorageConnectionString"];
-            BlobContainerName = configuration["BlobContainerName"];
-            LocalFilePath = configuration["LocalFilePath"];
-
-            ADXclusterNameAndRegion = configuration["ADXclusterNameAndRegion"];
-            AADAppId = configuration["AADAppId"];
-            AADAppSecret = configuration["AADAppSecret"];
-            AADTenent = configuration["AADTenent"];
-
-            ADXDatabaseName = configuration["ADXDatabaseName"];
-            ADXTableName = configuration["ADXTableName"];
-            ADXTableMappingName = configuration["ADXTableMappingName"];
-            IngestionFlushImmediately = bool.Parse(configuration["IngestionFlushImmediately"]);
-            DeleteSourceOnSuccessIngestion = bool.Parse(configuration["DeleteSourceOnSuccessIngestion"]);
-
-            TotalItems = Int32.Parse(configuration["TotalItems"]);
-            ItemsPerBatch = Int32.Parse(configuration["ItemsPerBatch"]);
-            IngestionDelayMS = Int32.Parse(configuration["IngestionDelayMS"]);
-
-            //Create Kusto connection string with App Authentication
-            var kustoConnectionStringBuilderDM =
-                new KustoConnectionStringBuilder($"https://ingest-{ADXclusterNameAndRegion}.kusto.windows.net").WithAadApplicationKeyAuthentication(
-                    applicationClientId: AADAppId,
-                    applicationKey: AADAppSecret,
-                    authority: AADTenent);
-
-            var kustoConnectionStringBuilderEngine =
-                new KustoConnectionStringBuilder($"https://{ADXclusterNameAndRegion}.kusto.windows.net").WithAadApplicationKeyAuthentication(
-                    applicationClientId: AADAppId,
-                    applicationKey: AADAppSecret,
-                    authority: AADTenent);
-
-            //Setup Kusto Queue Ingestion
-            IKustoQueuedIngestClient Kustoclient = KustoIngestFactory.CreateQueuedIngestClient(kustoConnectionStringBuilderDM);
-            var kustoIngestionProperties = new KustoQueuedIngestionProperties(databaseName: ADXDatabaseName, tableName: ADXTableName)
+            //Reading application settings
+            try
             {
-                ReportLevel = IngestionReportLevel.FailuresAndSuccesses,
-                ReportMethod = IngestionReportMethod.QueueAndTable,
-                FlushImmediately = IngestionFlushImmediately,
-                Format = DataSourceFormat.json,
-                IngestionMapping = new IngestionMapping { IngestionMappingKind = Kusto.Data.Ingestion.IngestionMappingKind.Json, IngestionMappingReference = ADXTableMappingName }
-            };
-            var sourceOptions = new StorageSourceOptions() { DeleteSourceOnSuccess = DeleteSourceOnSuccessIngestion };
-            IRetryPolicy retryPolicy = new NoRetry();
-            ((IKustoQueuedIngestClient)Kustoclient).QueuePostRequestOptions.RetryPolicy = retryPolicy;
+                IConfigurationRoot configuration = new ConfigurationBuilder()
+                        .AddJsonFile("appSettings.json")
+                        .Build();
 
-            //Setup Kusto Streaming Ingestion
-            IKustoIngestClient KustoStreamingClient = KustoIngestFactory.CreateStreamingIngestClient(kustoConnectionStringBuilderEngine);
-            var kustostreamingIngestionProperties = new KustoIngestionProperties(databaseName: ADXDatabaseName, tableName: ADXTableName)
-            {
-                //ReportLevel = IngestionReportLevel.FailuresAndSuccesses,
-                //ReportMethod = IngestionReportMethod.QueueAndTable,
-                //FlushImmediately = IngestionFlushImmediately,
-                Format = DataSourceFormat.json,
-                IngestionMapping = new IngestionMapping { IngestionMappingKind = Kusto.Data.Ingestion.IngestionMappingKind.Json, IngestionMappingReference = ADXTableMappingName }
-            };
+                StorageConnectionString = configuration["StorageConnectionString"];
+                BlobContainerName = configuration["BlobContainerName"];
+                LocalFilePath = configuration["LocalFilePath"];
 
-            //Local Blob creation
-            String containerName = BlobContainerName;
-            String FilePath = LocalFilePath + containerName + @"\";
-            if (!System.IO.Directory.Exists(FilePath))
+                ADXclusterNameAndRegion = configuration["ADXclusterNameAndRegion"];
+                AADAppId = configuration["AADAppId"];
+                AADAppSecret = configuration["AADAppSecret"];
+                AADTenent = configuration["AADTenent"];
+                ADXDatabaseName = configuration["ADXDatabaseName"];
+                ADXTableName = configuration["ADXTableName"];
+                ADXTableMappingName = configuration["ADXTableMappingName"];
+
+                IngestionType = configuration["IngestionType"];
+                IngestionTotalItems = Int32.Parse(configuration["IngestionTotalItems"]);
+                IngestionItemsPerBatch = Int32.Parse(configuration["IngestionItemsPerBatch"]);
+                IngestionDelayMSPerBatch = Int32.Parse(configuration["IngestionDelayMSPerBatch"]);
+                QueueIngestionFlushImmediately = bool.Parse(configuration["QueueIngestionFlushImmediately"]);
+                DeleteSourceOnSuccessQueueIngestion = bool.Parse(configuration["DeleteSourceOnSuccessQueueIngestion"]);
+            }
+            catch (Exception ex)
             {
-                System.IO.Directory.CreateDirectory(FilePath);
+                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, reading application settings, failed: {ex.Message}");
+            }
+            finally
+            {
+                //Create Kusto connection string with App Authentication
+                switch (IngestionType.ToLower())
+                {
+                    case "queue":
+                    case "streaming":
+                        connectionStringDM = String.Format($"https://ingest-{ADXclusterNameAndRegion}.kusto.windows.net");
+                        connectionStringEngine = String.Format($"https://{ADXclusterNameAndRegion}.kusto.windows.net");
+                        break;
+                    default:
+                        Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, IngestionType must be Queue or Streaming, press ENTER to exit ...");
+                        Console.ReadLine();
+                        Environment.Exit(0);                        
+                        break;                        
+                }
             }
 
-            //Create Azure Blob Storage connection client
-            BlobContainerClient blobContainerClient = new BlobContainerClient(storageConnectionString, containerName);
-            await blobContainerClient.CreateIfNotExistsAsync();
+            //Create local file folder if not exists
+            String containerName = BlobContainerName;
+            String FilePath = LocalFilePath + containerName + @"\";
+            try
+            {
+                if (!System.IO.Directory.Exists(FilePath))
+                {
+                    System.IO.Directory.CreateDirectory(FilePath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, create local file folder, failed: {ex.Message}");
+                Console.ReadLine();
+                Environment.Exit(0);
+            }
+
+            //Create Azure Blob Storage container if not exists
+            BlobContainerClient blobContainerClient = new BlobContainerClient(StorageConnectionString, containerName);
+            try
+            {
+                await blobContainerClient.CreateIfNotExistsAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, create Azure Blob Storage container, failed: {ex.Message}");
+                Console.ReadLine();
+                Environment.Exit(0);
+
+            }            
 
             Stopwatch stopwatch = new Stopwatch();
             stopwatch.Restart();
 
-            Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, queue ingestion demo start");
+            Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, [{IngestionType}] ingestion demo start");
             String BatchTimestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
             String BatchId = Guid.NewGuid().ToString();
+
             int i = 0;
-            while (AccumulatedItems < TotalItems)
+            while (AccumulatedItems < IngestionTotalItems)
             {
                 Console.WriteLine();
                 Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, Ingestion round {++i}, start");
-                int miniItemsPerBatch = ((AccumulatedItems + ItemsPerBatch) > TotalItems ? TotalItems - AccumulatedItems : ItemsPerBatch);
+                int miniIngestionItemsPerBatch = ((AccumulatedItems + IngestionItemsPerBatch) > IngestionTotalItems ? IngestionTotalItems - AccumulatedItems : IngestionItemsPerBatch);
+
                 String miniBatchId = i.ToString().PadLeft(10, '0');
-                miniBatchId = miniBatchId.Substring(miniBatchId.Length - 10, 10);
+                miniBatchId = String.Format($"{IngestionType.Substring(0, 1).ToLower()}{miniBatchId.Substring(miniBatchId.Length - 10, 10)}");
                 String FileName = String.Format($"{BatchTimestamp}-{BatchId}-{miniBatchId}.json");
-                String Ingetiontype = "Streaming";
+                
                 try
                 {
-                    List<Item> itemslist = GetItemsToList(miniItemsPerBatch, BatchId);
+                    List<Item> itemslist = GetItemsToList(miniIngestionItemsPerBatch, BatchId, miniBatchId);
                     await SaveItemsToLocalFilePath(itemslist, FilePath, FileName);
-                    if (Ingetiontype == "Queue")
+
+                    if (IngestionType.ToLower() == "queue")
                     {
                         await SaveItemsToBlobContainer(FilePath, FileName, blobContainerClient);
                         BlobClient blob = blobContainerClient.GetBlobClient(FileName);
                         Uri blobSASUri;
-                        if (DeleteSourceOnSuccessIngestion)
+                        if (DeleteSourceOnSuccessQueueIngestion)
                             blobSASUri = blob.GenerateSasUri(Azure.Storage.Sas.BlobSasPermissions.Read | Azure.Storage.Sas.BlobSasPermissions.Delete, DateTime.UtcNow.AddHours(4));
                         else
                             blobSASUri = blob.GenerateSasUri(Azure.Storage.Sas.BlobSasPermissions.Read, DateTime.UtcNow.AddHours(4));
 
-                        await ExecuteQueueIngestion(blobSASUri, Kustoclient, kustoIngestionProperties, sourceOptions);
+                        #region Setup Kusto Queue Ingestion client and properties
+                        var kustoConnectionStringBuilderDM =
+                            new KustoConnectionStringBuilder(connectionStringDM).WithAadApplicationKeyAuthentication(
+                                applicationClientId: AADAppId,
+                                applicationKey: AADAppSecret,
+                                authority: AADTenent);
+
+                        var KustoQueueclient = KustoIngestFactory.CreateQueuedIngestClient(kustoConnectionStringBuilderDM);
+                        var kustoQueueIngestionProperties = new KustoQueuedIngestionProperties(databaseName: ADXDatabaseName, tableName: ADXTableName)
+                        {
+                            ReportLevel = IngestionReportLevel.FailuresAndSuccesses,
+                            ReportMethod = IngestionReportMethod.QueueAndTable,
+                            FlushImmediately = QueueIngestionFlushImmediately,
+                            Format = DataSourceFormat.json,
+                            IngestionMapping = new IngestionMapping { IngestionMappingKind = Kusto.Data.Ingestion.IngestionMappingKind.Json, IngestionMappingReference = ADXTableMappingName }
+                        };
+                        var sourceOptions = new StorageSourceOptions() { DeleteSourceOnSuccess = DeleteSourceOnSuccessQueueIngestion };
+                        IRetryPolicy retryPolicy = new NoRetry();
+                        ((IKustoQueuedIngestClient)KustoQueueclient).QueuePostRequestOptions.RetryPolicy = retryPolicy;
+                        #endregion
+
+                        await ExecuteQueueIngestion(blobSASUri, KustoQueueclient, kustoQueueIngestionProperties, sourceOptions);
                     }
-                    else if (Ingetiontype == "Streaming")
+                    else if (IngestionType.ToLower() == "streaming")
                     {
-                        await ExecuteStreamingIngestion(FilePath, FileName, KustoStreamingClient, kustostreamingIngestionProperties);
+                        #region Setup Kusto Streaming Ingestion client and properties
+                        var kustoConnectionStringBuilderEngine =
+                            new KustoConnectionStringBuilder(connectionStringEngine).WithAadApplicationKeyAuthentication(
+                                applicationClientId: AADAppId,
+                                applicationKey: AADAppSecret,
+                                authority: AADTenent);
+
+                        var KustoStreamingClient = KustoIngestFactory.CreateStreamingIngestClient(kustoConnectionStringBuilderEngine);
+                        var kustoStreamingIngestionProperties = new KustoIngestionProperties(databaseName: ADXDatabaseName, tableName: ADXTableName)
+                        {
+                            Format = DataSourceFormat.json,
+                            IngestionMapping = new IngestionMapping { IngestionMappingKind = Kusto.Data.Ingestion.IngestionMappingKind.Json, IngestionMappingReference = ADXTableMappingName }
+                        };
+                        #endregion
+
+                        await ExecuteStreamingIngestion(FilePath, FileName, KustoStreamingClient, kustoStreamingIngestionProperties);
                     }
                 }
-                catch (Exception ce)
+                catch (Exception ex)
                 {
-                    Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ingestion round {i}, failed: {ce.Message}");
+                    Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ingestion round {i}, failed: {ex.Message}");
                 }
                 finally
                 {
-                    AccumulatedItems += miniItemsPerBatch;
+                    AccumulatedItems += miniIngestionItemsPerBatch;
 
                     await CleanUpLocalFilePath(FilePath, FileName);
-                    if (!DeleteSourceOnSuccessIngestion)
+                    if (!DeleteSourceOnSuccessQueueIngestion)
                     {
                         //await CleanUpBlobContainer(blobContainerClient);
                     }
 
                     Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ingestion round {i}, finished (AccumulatedItems={AccumulatedItems}).");
-                }                
-                Thread.Sleep(IngestionDelayMS);
+                }
+                Thread.Sleep(IngestionDelayMSPerBatch);
             }
 
             stopwatch.Stop();
             Console.WriteLine();
-            Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, queue ingestion demo finished in {stopwatch.Elapsed} ({TotalItems} items; {i} batches; IngestionFlushImmediately={IngestionFlushImmediately}).");
+            Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, [{IngestionType}] ingestion demo finished");
+
+            switch (IngestionType.ToLower())
+            {
+                case "queue":
+                    Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, > target Kusto cluster: {connectionStringDM}");
+                    Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, > QueueIngestionFlushImmediately: {QueueIngestionFlushImmediately}");
+                    Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, > DeleteSourceOnSuccessQueueIngestion: {DeleteSourceOnSuccessQueueIngestion}");
+                    break;
+                case "streaming":
+                    Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, > target Kusto cluster: {connectionStringEngine}");
+                    break;
+            }            
+            Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, > target database name: {ADXDatabaseName}");
+            Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, > target table name: {ADXTableName}");
+            Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, > target ingestion mapping name: {ADXTableMappingName}");
+            Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ingested {IngestionTotalItems} items through {i} batches in {stopwatch.Elapsed}");
         }
 
-        private static async Task ExecuteQueueIngestion(Uri blobSASUri, IKustoQueuedIngestClient Kustoclient, KustoQueuedIngestionProperties kustoIngestionProperties, StorageSourceOptions sourceOptions)
+        private static async Task ExecuteQueueIngestion(Uri blobSASUri, IKustoQueuedIngestClient KustoQueueclient, KustoQueuedIngestionProperties kustoQueueIngestionProperties, StorageSourceOptions sourceOptions)
         {
             Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteQueueIngestion, job start");
 
             try
             {
                 IKustoIngestionResult KustoIngestionresult;
-                KustoIngestionresult = Kustoclient.IngestFromStorageAsync(uri: blobSASUri.AbsoluteUri, ingestionProperties: kustoIngestionProperties, sourceOptions).Result;
+                KustoIngestionresult = KustoQueueclient.IngestFromStorageAsync(uri: blobSASUri.AbsoluteUri, ingestionProperties: kustoQueueIngestionProperties, sourceOptions).Result;
 
                 var IngestResults = KustoIngestionresult.GetIngestionStatusCollection();
                 int Pending = 0, Failed = 0, Succeeded = 0;
@@ -203,13 +268,14 @@ namespace KustoIngestionSample
                 }                
                 Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteQueueIngestion, job submitted: {IngestResults.Count()} ({Pending} Pending; {Failed} Failed; {Succeeded} Succeeded; IngestionSourceId:{sourceOptions.SourceId})");
             }
-            catch (Exception ce)
+            catch (Exception ex)
             {
-                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteQueueIngestion, job failed: {ce.Message}");
+                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteQueueIngestion, job failed: {ex.Message}");
             }
             Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteQueueIngestion, job finished");
         }
-        private static async Task ExecuteStreamingIngestion(String FilePath, String FileName, IKustoIngestClient Kustoclient, KustoIngestionProperties kustoIngestionProperties)
+        
+        private static async Task ExecuteStreamingIngestion(String FilePath, String FileName, IKustoIngestClient KustoQueueclient, KustoIngestionProperties kustoQueueIngestionProperties)
         {
             Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteStreamingIngestion, job start");
 
@@ -222,7 +288,7 @@ namespace KustoIngestionSample
                 using (FileStream fileStream = File.OpenRead(FilePath + FileName))
                 {
                     fileSize = fileStream.Length;
-                    KustoIngestionresult = Kustoclient.IngestFromStreamAsync(stream: fileStream, ingestionProperties: kustoIngestionProperties).GetAwaiter().GetResult();
+                    KustoIngestionresult = KustoQueueclient.IngestFromStreamAsync(stream: fileStream, ingestionProperties: kustoQueueIngestionProperties).GetAwaiter().GetResult();
                 }
 
                 var IngestResults = KustoIngestionresult.GetIngestionStatusCollection();
@@ -244,9 +310,9 @@ namespace KustoIngestionSample
                 }
                 Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteStreamingIngestion, job submitted: {IngestResults.Count()} ({Pending} Pending; {Failed} Failed; {Succeeded} Succeeded)");
             }
-            catch (Exception ce)
+            catch (Exception ex)
             {
-                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteStreamingIngestion, job failed: {ce.Message}");
+                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, ExecuteStreamingIngestion, job failed: {ex.Message}");
             }
             finally
             {
@@ -285,9 +351,9 @@ namespace KustoIngestionSample
                 }
                 Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, CleanUpLocalFilePath, {FilePath + FileName}");
             }
-            catch (Exception ce)
+            catch (Exception ex)
             {
-                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, CleanUpLocalFilePath, failed: {ce.Message}");
+                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, CleanUpLocalFilePath, failed: {ex.Message}");
             }
             finally
             {
@@ -317,7 +383,7 @@ namespace KustoIngestionSample
         private static async Task CleanUpBlobContainer(BlobContainerClient blobContainerClient)
         {
             /*
-                Kusto Ingestion (queue) is an aync process, we should manually delete blobs after comfirming ingestion completed.
+                Kusto Ingestion (queue) is an aync process, we should manually delete blobs after confirming ingestion completed.
                 Batches are sealed when the first condition is met:
                 1. The total size of the batched data reaches the size set by the IngestionBatching policy.
                 2. The maximum delay time is reached
@@ -341,9 +407,9 @@ namespace KustoIngestionSample
                     Thread.Sleep(1000);
                 }
             }
-            catch (Azure.RequestFailedException ce)
+            catch (Azure.RequestFailedException ex)
             {
-                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, CleanUpBlobContainer, failed: {ce.Message}");
+                Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, CleanUpBlobContainer, failed: {ex.Message}");
             }
             finally
             {
@@ -351,7 +417,7 @@ namespace KustoIngestionSample
             }
         }
 
-        private static List<Item> GetItemsToList(int ItemCount, String BatchId)
+        private static List<Item> GetItemsToList(int ItemCount, String BatchId, String miniBatchId)
         {
             Console.WriteLine($"{ DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.ffffff")}, GetItemsToList, generating {ItemCount} items (BatchId = {BatchId}).");
             
@@ -360,10 +426,11 @@ namespace KustoIngestionSample
                 .RuleFor(o => o.colors, f => f.Commerce.Color())
                 .RuleFor(o => o.material, f => f.Commerce.ProductMaterial());
 
+            String BatchIds = String.Format($"{BatchId};{miniBatchId}");
             int Serial = 1;
             var SampleItems = new Bogus.Faker<Item>()
                 .StrictMode(false)
-                .RuleFor(o => o.ItemBatch, f => BatchId)
+                .RuleFor(o => o.ItemBatch, f => BatchIds)
                 .RuleFor(o => o.ItemSerial, f => Serial++)
                 .RuleFor(o => o.id, f => Guid.NewGuid().ToString())
                 .RuleFor(o => o.pk, (f, o) => f.Commerce.Product())
@@ -390,6 +457,5 @@ namespace KustoIngestionSample
         }
 
     }
-
 
 }
